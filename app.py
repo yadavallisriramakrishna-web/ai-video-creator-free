@@ -1,69 +1,60 @@
 import streamlit as st
-import math, json
-from typing import List, Optional
-from openai import OpenAI
+import asyncio, math
+import edge_tts
+from moviepy.editor import ColorClip, TextClip, CompositeVideoClip, AudioFileClip, concatenate_videoclips
 
-class SceneDirective:
-    def __init__(self, scene_index, narration, visual_prompt, camera_motion, motion_brush_target, sound_effect):
-        self.scene_index = scene_index
-        self.narration = narration
-        self.visual_prompt = visual_prompt
-        self.camera_motion = camera_motion
-        self.motion_brush_target = motion_brush_target
-        self.sound_effect = sound_effect
+st.set_page_config(page_title="Character Voice Video Creator", layout="wide")
+st.title("🎙️ Character Voice Video Creator")
 
-class DirectorAgent:
-    def __init__(self, api_key):
-        self.client = OpenAI(api_key=api_key)
+# --- Character Voices ---
+voices = {
+    "Telugu Male - Mohan": "te-IN-MohanNeural",
+    "Telugu Female - Shruti": "te-IN-ShrutiNeural",
+    "English Male - Guy (Hero)": "en-US-GuyNeural",
+    "English Female - Jenny (Heroine)": "en-US-JennyNeural",
+    "English Male Deep - Christopher": "en-US-ChristopherNeural",
+    "Telugu English Mix - Neerja": "en-IN-NeerjaNeural"
+}
 
-    def plan(self, topic: str, duration: int, aspect_ratio: str, character_desc: Optional[str] = None) -> List[SceneDirective]:
-        total_scenes = max(2, math.ceil(duration / 5.0))
-        consistency = f"Character: {character_desc}. SAME face, SAME clothes." if character_desc else "Ensure visual continuity."
-        all_scenes = []
-        batch_size = 20
-        batches = math.ceil(total_scenes / batch_size)
+char = st.selectbox("Select Character Voice / Character Voice Enchuko", list(voices.keys()))
+voice_id = voices[char]
 
-        for b in range(batches):
-            count_in_batch = min(batch_size, total_scenes - len(all_scenes))
-            start_idx = len(all_scenes) + 1
-            prompt = f"""Act as AI Film Director. Topic: "{topic}" (Part {b+1} of {batches})
-            Duration: {duration}s. Plan EXACTLY {count_in_batch} scenes from {start_idx}.
-            Format: {aspect_ratio} {consistency}
-            Return ONLY JSON: {{"scenes": [{{"scene_index": {start_idx}, "narration": "Telugu 4-5 sec line", "visual_prompt": "Cinematic 8k", "camera_motion": "Zoom In", "motion_brush_target": "coin", "sound_effect": "wind"}}]}}"""
-            try:
-                res = self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                raw = json.loads(res.choices[0].message.content).get("scenes", [])
-                for s in raw:
-                    all_scenes.append(SceneDirective(s.get("scene_index", len(all_scenes)+1), s.get("narration", ""), s.get("visual_prompt", ""), s.get("camera_motion", "Static"), s.get("motion_brush_target", "None"), s.get("sound_effect", "ambient")))
-            except Exception as e:
-                st.warning(f"Batch {b+1} error: {e}")
-                for i in range(count_in_batch):
-                    all_scenes.append(SceneDirective(len(all_scenes)+1, f"Exploring {topic} scene {len(all_scenes)+1}", f"Cinematic {topic}", "Pan Right", "particles", "wind"))
-        return all_scenes
+topic = st.text_input("Topic", "Ragi Kasu History")
+duration = st.slider("Duration", 10, 60, 20)
+num_scenes = math.ceil(duration / 5)
 
-# --- UI ---
-st.set_page_config(page_title="AI Video Creator", layout="wide")
-st.title("🎬 AI Video Creator - OpenAI Only")
+defaults = [f"{topic} part {i+1}" for i in range(num_scenes)]
+scenes = []
+for i in range(num_scenes):
+    scenes.append(st.text_area(f"Scene {i+1} Dialogue", defaults[i], key=i))
 
-api_key = st.secrets.get("OPENAI_API_KEY") or st.text_input("OpenAI API Key", type="password")
-topic = st.text_input("Topic", "Ragi kasu history telugu lo")
-duration = st.slider("Duration (sec)", 10, 600, 30)
-aspect_ratio = st.selectbox("Ratio", ["9:16 Vertical", "16:9 Horizontal", "1:1 Square"])
-character = st.text_input("Character", "Telugu historian")
+async def make_audio(text, voice, file):
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(file)
 
-if st.button("Generate Plan 🚀"):
-    if not api_key:
-        st.error("OpenAI API Key pettu!")
-    else:
-        director = DirectorAgent(api_key)
-        with st.spinner(f"{math.ceil(duration/5)} scenes planning..."):
-            scenes = director.plan(topic, duration, aspect_ratio, character)
-        st.success(f"{len(scenes)} Scenes Ready!")
-        for s in scenes:
-            with st.expander(f"Scene {s.scene_index}: {s.narration[:50]}"):
-                st.json(s.__dict__)
-        st.download_button("Download JSON", json.dumps([vars(x) for x in scenes], indent=2), "plan.json")
+if st.button("🎥 CREATE WITH CHARACTER VOICE"):
+    clips = []
+    bar = st.progress(0)
+
+    for i, text in enumerate(scenes):
+        st.write(f"Generating {char} - Scene {i+1}")
+
+        # Character Voice Generation (FREE)
+        asyncio.run(make_audio(text, voice_id, f"scene_{i}.mp3"))
+        audio = AudioFileClip(f"scene_{i}.mp3")
+
+        # Background
+        bg = ColorClip(size=(1080, 1920), color=(20, 20, 80)).set_duration(audio.duration)
+        txt = TextClip(text, fontsize=55, color='white', font='DejaVu-Sans-Bold', method='caption', size=(900, None)).set_duration(audio.duration).set_position('center')
+
+        clip = CompositeVideoClip([bg, txt]).set_audio(audio)
+        clips.append(clip)
+        bar.progress((i+1)/num_scenes)
+
+    final = concatenate_videoclips(clips)
+    final.write_videofile("character_video.mp4", fps=24, codec='libx264')
+
+    st.success(f"Video with {char} voice ready! ✅")
+    st.video("character_video.mp4")
+    with open("character_video.mp4", "rb") as f:
+        st.download_button("Download Character Video", f, "character_video.mp4")
