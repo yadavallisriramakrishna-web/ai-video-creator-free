@@ -1,12 +1,7 @@
 import streamlit as st
-import math, json, os
+import math, json
 from typing import List, Optional
 from openai import OpenAI
-
-# --- CONFIG ---
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
-BASE_URL = st.secrets.get("BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME = "llama-3.3-70b-versatile" # Free & fast
 
 class SceneDirective:
     def __init__(self, scene_index, narration, visual_prompt, camera_motion, motion_brush_target, sound_effect):
@@ -18,8 +13,8 @@ class SceneDirective:
         self.sound_effect = sound_effect
 
 class DirectorAgent:
-    def __init__(self):
-        self.client = OpenAI(api_key=OPENAI_API_KEY, base_url=BASE_URL)
+    def __init__(self, api_key):
+        self.client = OpenAI(api_key=api_key)
 
     def plan(self, topic: str, duration: int, aspect_ratio: str, character_desc: Optional[str] = None) -> List[SceneDirective]:
         total_scenes = max(2, math.ceil(duration / 5.0))
@@ -34,39 +29,41 @@ class DirectorAgent:
             prompt = f"""Act as AI Film Director. Topic: "{topic}" (Part {b+1} of {batches})
             Duration: {duration}s. Plan EXACTLY {count_in_batch} scenes from {start_idx}.
             Format: {aspect_ratio} {consistency}
-            Return JSON: {{"scenes": [{{"scene_index": {start_idx}, "narration": "4-5 sec voiceover", "visual_prompt": "Cinematic 8k", "camera_motion": "Zoom In", "motion_brush_target": "water", "sound_effect": "ambient wind"}}]}}"""
+            Return ONLY JSON: {{"scenes": [{{"scene_index": {start_idx}, "narration": "Telugu 4-5 sec line", "visual_prompt": "Cinematic 8k", "camera_motion": "Zoom In", "motion_brush_target": "coin", "sound_effect": "wind"}}]}}"""
             try:
-                res = self.client.chat.completions.create(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
+                res = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
                 raw = json.loads(res.choices[0].message.content).get("scenes", [])
                 for s in raw:
                     all_scenes.append(SceneDirective(s.get("scene_index", len(all_scenes)+1), s.get("narration", ""), s.get("visual_prompt", ""), s.get("camera_motion", "Static"), s.get("motion_brush_target", "None"), s.get("sound_effect", "ambient")))
-            except Exception:
+            except Exception as e:
+                st.warning(f"Batch {b+1} error: {e}")
                 for i in range(count_in_batch):
-                    all_scenes.append(SceneDirective(len(all_scenes)+1, f"Exploring {topic}, scene {len(all_scenes)+1}", f"Cinematic {topic} #{len(all_scenes)+1}", "Pan Right", "particles", "wind"))
+                    all_scenes.append(SceneDirective(len(all_scenes)+1, f"Exploring {topic} scene {len(all_scenes)+1}", f"Cinematic {topic}", "Pan Right", "particles", "wind"))
         return all_scenes
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Polybug Video Creator", layout="wide")
-st.title("🎬 Polybug - AI Video Creator (FREE)")
+# --- UI ---
+st.set_page_config(page_title="AI Video Creator", layout="wide")
+st.title("🎬 AI Video Creator - OpenAI Only")
 
-topic = st.text_input("Topic enti?", "Ragi kasu history telugu lo")
-duration = st.slider("Duration (seconds)", 10, 600, 30)
-aspect_ratio = st.selectbox("Aspect Ratio", ["9:16 Vertical", "16:9 Horizontal", "1:1 Square"])
-character = st.text_input("Character (Optional)", "Telugu historian")
+api_key = st.secrets.get("OPENAI_API_KEY") or st.text_input("OpenAI API Key", type="password")
+topic = st.text_input("Topic", "Ragi kasu history telugu lo")
+duration = st.slider("Duration (sec)", 10, 600, 30)
+aspect_ratio = st.selectbox("Ratio", ["9:16 Vertical", "16:9 Horizontal", "1:1 Square"])
+character = st.text_input("Character", "Telugu historian")
 
-if st.button("Generate Video Plan 🚀"):
-    if not OPENAI_API_KEY:
-        st.error("API Key ledu! Streamlit Secrets lo OPENAI_API_KEY add chey")
+if st.button("Generate Plan 🚀"):
+    if not api_key:
+        st.error("OpenAI API Key pettu!")
     else:
-        director = DirectorAgent()
-        with st.spinner(f"{duration} sec video ki {math.ceil(duration/5)} scenes plan chestunna..."):
+        director = DirectorAgent(api_key)
+        with st.spinner(f"{math.ceil(duration/5)} scenes planning..."):
             scenes = director.plan(topic, duration, aspect_ratio, character)
-
         st.success(f"{len(scenes)} Scenes Ready!")
         for s in scenes:
-            with st.expander(f"Scene {s.scene_index}: {s.narration[:50]}..."):
-                st.write(f"**Narration:** {s.narration}")
-                st.write(f"**Visual:** {s.visual_prompt}")
-                st.write(f"**Camera:** {s.camera_motion} | **Motion:** {s.motion_brush_target} | **Sound:** {s.sound_effect}")
-
-        st.download_button("Download JSON", json.dumps([vars(x) for x in scenes], indent=2), file_name="video_plan.json")
+            with st.expander(f"Scene {s.scene_index}: {s.narration[:50]}"):
+                st.json(s.__dict__)
+        st.download_button("Download JSON", json.dumps([vars(x) for x in scenes], indent=2), "plan.json")
